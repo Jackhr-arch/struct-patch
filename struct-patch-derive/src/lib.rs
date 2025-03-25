@@ -3,16 +3,23 @@ use proc_macro2::{Ident, Span, TokenStream};
 use quote::{quote, ToTokens};
 use std::str::FromStr;
 use syn::{
-    meta::ParseNestedMeta, parenthesized, spanned::Spanned, DeriveInput, Error, LitStr, Result,
-    Type,
+    meta::ParseNestedMeta, parenthesized, spanned::Spanned, DeriveInput, Error, ExprPath, LitStr,
+    Result, Type,
 };
 
 const PATCH: &str = "patch";
 const NAME: &str = "name";
 const ATTRIBUTE: &str = "attribute";
+
 const SKIP: &str = "skip";
+
+const SKIP_IF: &str = "skip_if";
+
 const ADDABLE: &str = "addable";
 const ADD: &str = "add";
+
+const EXTENDABLE: &str = "extendable";
+const EXTEND: &str = "extend";
 
 #[proc_macro_derive(Patch, attributes(patch))]
 pub fn derive_patch(item: proc_macro::TokenStream) -> proc_macro::TokenStream {
@@ -32,12 +39,17 @@ struct Patch {
     fields: Vec<Field>,
 }
 
+enum Extendable {
+    Disable,
+    Triat,
+    Fn(ExprPath),
+}
+
 #[cfg(feature = "op")]
 enum Addable {
     Disable,
     AddTriat,
-    #[cfg(feature = "op")]
-    AddFn(Ident),
+    AddFn(ExprPath),
 }
 
 struct Field {
@@ -47,6 +59,8 @@ struct Field {
     retyped: bool,
     #[cfg(feature = "op")]
     addable: Addable,
+    extendable: Extendable,
+    skip_if: Option<ExprPath>,
 }
 
 impl Patch {
@@ -248,6 +262,31 @@ impl Patch {
         #[cfg(not(feature = "op"))]
         let op_impl = quote!();
 
+        let extendable_handles = fields
+            .iter()
+            .map(|f| match &f.extendable {
+                Extendable::Triat => quote!(
+                    a.extend(b);
+                ),
+                Extendable::Fn(f) => quote!(
+                    #f(a, b);
+                ),
+                Extendable::Disable => quote!(
+                    *a = b;
+                ),
+            })
+            .collect::<Vec<_>>();
+
+        let skip_handles = fields
+            .iter()
+            .map(|f| match &f.skip_if {
+                Some(f) => quote!(
+                    #f(a)
+                ),
+                None => quote!(false),
+            })
+            .collect::<Vec<_>>();
+
         let patch_impl = quote! {
             impl #generics struct_patch::traits::Patch< #name #generics > for #struct_name #generics #where_clause  {
                 fn apply(&mut self, patch: #name #generics) {
@@ -258,7 +297,11 @@ impl Patch {
                     )*
                     #(
                         if let Some(v) = patch.#original_field_names {
-                            self.#original_field_names = v;
+                            let a = &mut self.#original_field_names;
+                            let b = v;
+                            if !#skip_handles{
+                                #extendable_handles
+                            }
                         }
                     )*
                 }
@@ -447,6 +490,8 @@ impl Field {
 
         #[cfg(feature = "op")]
         let mut addable = Addable::Disable;
+        let mut extendable = Extendable::Disable;
+        let mut skip_if = None;
 
         for attr in attrs {
             if attr.path().to_string().as_str() != PATCH {
@@ -465,6 +510,11 @@ impl Field {
                     SKIP => {
                         // #[patch(skip)]
                         skip = true;
+                    }
+                    SKIP_IF => {
+                        // #[patch(skip_if = fn)]
+                        let f: ExprPath = meta.value()?.parse()?;
+                        skip_if = Some(f);
                     }
                     ATTRIBUTE => {
                         // #[patch(attribute(serde(alias = "my-field")))]
@@ -493,12 +543,21 @@ impl Field {
                     #[cfg(feature = "op")]
                     ADD => {
                         // #[patch(add=fn)]
-                        let f: Ident = meta.value()?.parse()?;
+                        let f: ExprPath = meta.value()?.parse()?;
                         addable = Addable::AddFn(f);
                     }
                     #[cfg(not(feature = "op"))]
                     ADD => {
                         return Err(syn::Error::new(ident.span(), "`add` needs `op` feature"));
+                    }
+                    EXTENDABLE => {
+                        // #[patch(extendable)]
+                        extendable = Extendable::Triat;
+                    }
+                    EXTEND => {
+                        // #[patch(extend = fn)]
+                        let f: ExprPath = meta.value()?.parse()?;
+                        extendable = Extendable::Fn(f);
                     }
                     _ => {
                         return Err(meta.error(format_args!(
@@ -521,6 +580,8 @@ impl Field {
             attributes,
             #[cfg(feature = "op")]
             addable,
+            extendable,
+            skip_if,
         }))
     }
 }
@@ -600,6 +661,8 @@ mod tests {
                 retyped: true,
                 #[cfg(feature = "op")]
                 addable: Addable::Disable,
+                extendable: Extendable::Disable,
+                skip_if: None,
             }],
         };
         let result = Patch::from_ast(syn::parse2(input).unwrap()).unwrap();
