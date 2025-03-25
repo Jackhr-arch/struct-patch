@@ -41,14 +41,14 @@ struct Patch {
 
 enum Extendable {
     Disable,
-    Triat,
+    Trait,
     Fn(ExprPath),
 }
 
 #[cfg(feature = "op")]
 enum Addable {
     Disable,
-    AddTriat,
+    AddTrait,
     AddFn(ExprPath),
 }
 
@@ -154,7 +154,7 @@ impl Patch {
             .iter()
             .map(|f| {
                 match &f.addable {
-                    Addable::AddTriat => quote!(
+                    Addable::AddTrait => quote!(
                         Some(a + b)
                     ),
                     Addable::AddFn(f) => {
@@ -265,7 +265,7 @@ impl Patch {
         let extendable_handles = fields
             .iter()
             .map(|f| match &f.extendable {
-                Extendable::Triat => quote!(
+                Extendable::Trait => quote!(
                     a.extend(b);
                 ),
                 Extendable::Fn(f) => quote!(
@@ -531,7 +531,7 @@ impl Field {
                     #[cfg(feature = "op")]
                     ADDABLE => {
                         // #[patch(addable)]
-                        addable = Addable::AddTriat;
+                        addable = Addable::AddTrait;
                     }
                     #[cfg(not(feature = "op"))]
                     ADDABLE => {
@@ -552,7 +552,7 @@ impl Field {
                     }
                     EXTENDABLE => {
                         // #[patch(extendable)]
-                        extendable = Extendable::Triat;
+                        extendable = Extendable::Trait;
                     }
                     EXTEND => {
                         // #[patch(extend = fn)]
